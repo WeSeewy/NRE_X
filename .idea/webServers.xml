@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="810e7a15-a911-4d38-99e0-9cff70ba2a8f" name="dplm_AGGCN" url="http://219.223.172.192">
+        <fileTransfer host="219.223.172.192" port="22" rootFolder="/home/wy2020" accessType="SFTP">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+          <option name="port" value="22" />
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
