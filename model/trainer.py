@@ -45,16 +45,18 @@ class Trainer(object):
         except BaseException:
             print("[Warning: Saving failed... continuing anyway.]")
 
-
+# 分解batch
 def unpack_batch(batch, cuda):
     if cuda: # batch：tuple12*50Tensor
-        inputs = [Variable(b.cuda()) for b in batch[:10]] # (words, masks, pos, ner, deprel, head, subj_positions, obj_positions, subj_type, obj_type)
+        inputs = [Variable(b.cuda()) for b in batch[:10]+batch[12:]]
+        # (words, masks, pos, ner, deprel, head, subj_positions, obj_positions, subj_type, obj_type) + ([x]rels, [x]orig_idx, head_berkeley, deprel_berkeley)
         labels = Variable(batch[10].cuda()) # rels
     else:
-        inputs = [Variable(b) for b in batch[:10]]
+        inputs = [Variable(b) for b in batch[:10]+batch[12:]]
         labels = Variable(batch[10])
     tokens = batch[0]  # 50 * 64
     head = batch[5] # 50 * 64
+    head_berkeley = batch[12]
     subj_pos = batch[6]   # 50 * 64
     obj_pos = batch[7] # 50 * 64
     lens = batch[1].eq(0).long().sum(1).squeeze() # 每个句子的长度 Shape=50
@@ -71,7 +73,7 @@ def unpack_batch(batch, cuda):
         41, 38, 37, 36, 36, 35, 33, 33, 33, 32, 31, 31, 31, 31, 30, 30, 29, 28,
         28, 28, 27, 27, 26, 24, 23, 22, 22, 21, 21, 20, 16, 14])
     '''
-    return inputs, labels, tokens, head, subj_pos, obj_pos, lens
+    return inputs, labels, tokens, head, subj_pos, obj_pos, lens, head_berkeley
 
 class GCNTrainer(Trainer):
     def __init__(self, opt, emb_matrix=None):
@@ -86,10 +88,10 @@ class GCNTrainer(Trainer):
         self.optimizer = torch_utils.get_optimizer(opt['optim'], self.parameters, opt['lr'])
 
     def update(self, batch):
-        inputs, labels, tokens, head, subj_pos, obj_pos, lens = unpack_batch(batch, self.opt['cuda'])
+        inputs, labels, tokens, head, subj_pos, obj_pos, lens, head_berkeley = unpack_batch(batch, self.opt['cuda'])
 
         # step forward
-        self.model.train()
+        self.model.train() # 将 model 设置为 training mode
         self.optimizer.zero_grad()
         logits, pooling_output = self.model(inputs)
         loss = self.criterion(logits, labels)
@@ -109,7 +111,7 @@ class GCNTrainer(Trainer):
         return loss_val
 
     def predict(self, batch, unsort=True):
-        inputs, labels, tokens, head, subj_pos, obj_pos, lens = unpack_batch(batch, self.opt['cuda'])
+        inputs, labels, tokens, head, subj_pos, obj_pos, lens, head_berkeley = unpack_batch(batch, self.opt['cuda'])
         orig_idx = batch[11]
         # forward
         self.model.eval()

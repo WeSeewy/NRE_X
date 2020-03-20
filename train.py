@@ -1,7 +1,7 @@
 """
 Train a model on TACRED.
 """
-
+# todo 输入的不是tree 而是tree+自环
 import os
 import sys
 from datetime import datetime
@@ -37,6 +37,10 @@ parser.add_argument('--lower', dest='lower', action='store_true', help='Lowercas
 parser.add_argument('--no-lower', dest='lower', action='store_false')
 parser.set_defaults(lower=False)
 
+parser.add_argument('--use_stanford', dest='parser_stanford', action='store_true')
+parser.add_argument('--use_berkeley', dest='parser_berkeley', action='store_true')
+parser.set_defaults(parser_stanford=False)
+parser.set_defaults(parser_berkeley=False)
 parser.add_argument('--heads', type=int, default=3, help='Num of heads in multi-head attention.')
 parser.add_argument('--sublayer_first', type=int, default=2, help='Num of the first sublayers in dcgcn block.')
 parser.add_argument('--sublayer_second', type=int, default=4, help='Num of the second sublayers in dcgcn block.')
@@ -101,9 +105,10 @@ assert emb_matrix.shape[1] == opt['emb_dim']
 
 # load data
 print("Loading data from {} with batch size {}...".format(opt['data_dir'], opt['batch_size']))
-train_batch = DataLoader(opt['data_dir'] + '/train.json', opt['batch_size'], opt, vocab, evaluation=False)
-dev_batch = DataLoader(opt['data_dir'] + '/dev.json', opt['batch_size'], opt, vocab, evaluation=True)
-
+# train_batch = DataLoader(opt['data_dir'] + '/train.json', opt['batch_size'], opt, vocab, evaluation=False)
+# dev_batch = DataLoader(opt['data_dir'] + '/dev.json', opt['batch_size'], opt, vocab, evaluation=True)
+train_batch = DataLoader(opt['data_dir'] + '/train_std_ber.json', opt['batch_size'], opt, vocab, evaluation=False)
+dev_batch = DataLoader(opt['data_dir'] + '/dev_std_ber.json', opt['batch_size'], opt, vocab, evaluation=True)
 model_id = opt['id'] if len(opt['id']) > 1 else '0' + opt['id']
 model_save_dir = opt['save_dir'] + '/' + model_id
 opt['model_save_dir'] = model_save_dir

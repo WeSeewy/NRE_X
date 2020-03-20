@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
 
-from model.tree import head_to_tree, tree_to_adj
+from model.tree import head_to_tree, tree_to_adj, head_to_adj
 from utils import constant, torch_utils
 
 
@@ -70,7 +70,7 @@ class GCNRelationModel(nn.Module):
             print("Finetune all embeddings.")
 
     def forward(self, inputs):
-        words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type = inputs # unpack
+        words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type, head_berkeley, deprel_berkeley = inputs # unpack
         l = (masks.data.cpu().numpy() == 0).astype(np.int64).sum(1) # l 是各个句子的长度
         maxlen = max(l)
 
@@ -81,8 +81,17 @@ class GCNRelationModel(nn.Module):
             adj = torch.from_numpy(adj)
             return Variable(adj.cuda()) if self.opt['cuda'] else Variable(adj)
 
+        def inputs_to_adj_reps(head, l):
+            adj = [head_to_adj(head[i], l[i], maxlen, directed=False).reshape(1, maxlen, maxlen) for i in range(len(l))]
+            adj = np.concatenate(adj, axis=0) # shape=(len,)
+            adj = torch.from_numpy(adj)
+            return  Variable(adj.cuda()) if self.opt['cuda'] else Variable(adj)
+
         adj = inputs_to_tree_reps(head.data, l) # head -> 邻接矩阵 -> 转成一维cuda变量
-        h, pool_mask = self.gcn(adj, inputs)
+        adj_berkeley = inputs_to_adj_reps(head_berkeley.data, l)
+
+        # h, pool_mask = self.gcn(adj, inputs)
+        h, pool_mask = self.gcn(adj_berkeley, inputs)
 
         # pooling
         subj_mask, obj_mask = subj_pos.eq(0).eq(0).unsqueeze(2), obj_pos.eq(0).eq(0).unsqueeze(2)  # invert mask
@@ -145,7 +154,8 @@ class AGGCN(nn.Module):
         return rnn_outputs
 
     def forward(self, adj, inputs):
-        words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type = inputs # unpack
+        # words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type = inputs # unpack
+        words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type, head_berkeley, deprel_berkeley = inputs  # unpack
         src_mask = (words != constant.PAD_ID).unsqueeze(-2)
         word_embs = self.emb(words)
         embs = [word_embs]

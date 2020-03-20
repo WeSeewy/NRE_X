@@ -78,7 +78,6 @@ def tree_to_adj(sent_len, tree, directed=True):
     idx = []
     while len(queue) > 0:
         t, queue = queue[0], queue[1:]
-
         idx += [t.idx]
 
         for c in t.children:
@@ -97,3 +96,19 @@ def tree_to_dist(sent_len, tree):
         ret[node.idx] = node.dist
 
     return ret
+
+def head_to_adj(head, sent_len, max_len, directed=True):
+    """
+    Convert a sequence of head indexes into a (numpy) adjacency matrix.
+    """
+    ret = np.zeros((max_len,max_len), dtype=np.float32)
+
+    for i in range(sent_len):
+        if i != head[i] - 1 and head[i] > 0:
+            ret[head[i] - 1, i] = 1
+    # todo 添加自环？
+    if not directed:
+        ret = ret + ret.T
+
+    return ret
+
