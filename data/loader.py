@@ -14,16 +14,16 @@ class DataLoader(object):
     Load data from json files, preprocess and prepare batches.
     """
     def __init__(self, filename, batch_size, opt, vocab, evaluation=False):
-        self.batch_size = batch_size
+        self.batch_size = batch_size # 50
         self.opt = opt
         self.vocab = vocab
-        self.eval = evaluation
-        self.label2id = constant.LABEL_TO_ID
+        self.eval = evaluation # false or true
+        self.label2id = constant.LABEL_TO_ID # {dict:42}{'no_relation':0,...}
 
         with open(filename) as infile:
             data = json.load(infile)
 
-        self.raw_data = data
+        self.raw_data = data # {list:68124}-[{dict:17}-{'id':'','head':''}...]
         data = self.preprocess(data, vocab, opt)
         # data = list:68124, each list is a 10+tuple,
 
@@ -32,44 +32,44 @@ class DataLoader(object):
             indices = list(range(len(data)))
             random.shuffle(indices)
             data = [data[i] for i in indices]
-        self.id2label = dict([(v,k) for k,v in self.label2id.items()])
-        self.labels = [self.id2label[d[9]] for d in data] # 关系 label
-        self.num_examples = len(data)
+        self.id2label = dict([(v,k) for k,v in self.label2id.items()]) # {0:'no_relation',... *42}
+        self.labels = [self.id2label[d[9]] for d in data] # 关系 label  ['per:title',... *68124]
+        self.num_examples = len(data) # 68124
 
         # chunk into batches
         data = [data[i:i+batch_size] for i in range(0, len(data), batch_size)]
-        self.data = data
+        self.data = data # [[(tokens,ner,pos,...*12)*50]*1363]
         print("{} batches created for {}".format(len(data), filename))
 
     def preprocess(self, data, vocab, opt):
         """ Preprocess the data and convert to ids. """
         processed = []
-        for d in data:
-            tokens = list(d['token'])
+        for d in data: # d:{dict:17}
+            tokens = list(d['token']) # {list:tokens_len}
             if opt['lower']:
                 tokens = [t.lower() for t in tokens]
             # anonymize tokens
             ss, se = d['subj_start'], d['subj_end']
             os, oe = d['obj_start'], d['obj_end']
-            tokens[ss:se+1] = ['SUBJ-'+d['subj_type']] * (se-ss+1)
+            tokens[ss:se+1] = ['SUBJ-'+d['subj_type']] * (se-ss+1) # 实体的每个 token 被换成 type mask
             tokens[os:oe+1] = ['OBJ-'+d['obj_type']] * (oe-os+1)
-            tokens = map_to_ids(tokens, vocab.word2id)
+            tokens = map_to_ids(tokens, vocab.word2id) # {list_of_int:tokens_len}-tokens 换成了 id
             pos = map_to_ids(d['stanford_pos'], constant.POS_TO_ID)
             ner = map_to_ids(d['stanford_ner'], constant.NER_TO_ID)
             deprel = map_to_ids(d['stanford_deprel'], constant.DEPREL_TO_ID)
-            head = [int(x) for x in d['stanford_head']]
+            head = [int(x) for x in d['stanford_head']] # {list_of_int:tokens_len}
             head_berkeley = [int(x) for x in d['berkeley_head']]
             deprel_berkeley = map_to_ids(d['berkeley_deprel'], constant.DEPREL_TO_ID)
             assert any([x == 0 for x in head])
             assert any([x == 0 for x in head_berkeley])
-            l = len(tokens)
-            subj_positions = get_positions(d['subj_start'], d['subj_end'], l) # 所有 token 以主语位置为原点的相对位置
+            l = len(tokens) # 当前tokens 的长度
+            subj_positions = get_positions(d['subj_start'], d['subj_end'], l) # 所有 token 以主语位置为原点的相对位置 {list_of_int:tokens_len}
             obj_positions = get_positions(d['obj_start'], d['obj_end'], l) # 所有 token 以宾语位置为原点的相对位置
-            subj_type = [constant.SUBJ_NER_TO_ID[d['subj_type']]]
+            subj_type = [constant.SUBJ_NER_TO_ID[d['subj_type']]] # int
             obj_type = [constant.OBJ_NER_TO_ID[d['obj_type']]]
             relation = self.label2id[d['relation']]
             processed += [(tokens, pos, ner, deprel, head, subj_positions, obj_positions, subj_type, obj_type, relation, head_berkeley, deprel_berkeley)]
-        return processed
+        return processed # {list_of_{tuple:12}:len(data)}
 
     def gold(self):
         """ Return gold labels as a list. """
@@ -84,14 +84,15 @@ class DataLoader(object):
             raise TypeError
         if key < 0 or key >= len(self.data):
             raise IndexError
-        batch = self.data[key]
-        batch_size = len(batch)
+        batch = self.data[key] # [(1,...,12)*50]
+        batch_size = len(batch) # 50
         batch = list(zip(*batch)) # zip 接受一系列可迭代的对象作为参数，将对象中对应的元素打包成一个个tuple（元组）
+        # [[token_list]*50, [pos_list]*50,... *12]
         assert len(batch) == 10+2  # 相当于行列颠倒了
 
         # sort all fields by lens for easy RNN operations
-        lens = [len(x) for x in batch[0]] # 50个句子各自的长度
-        batch, orig_idx = sort_all(batch, lens) # 按长度从大到小排序
+        lens = [len(x) for x in batch[0]] # 50个句子各自的长度(排序前)
+        batch, orig_idx = sort_all(batch, lens) # 按长度从大到小排序，还没<pad>
 
         # word dropout
         if not self.eval: # todo 为啥word也要dropout
@@ -100,8 +101,8 @@ class DataLoader(object):
             words = batch[0]
 
         # convert to tensors
-        words = get_long_tensor(words, batch_size) # train模式下是dropout之后的句子
-        masks = torch.eq(words, 0)  # 比较元素相等性
+        words = get_long_tensor(words, batch_size) # train模式下是dropout之后的句子 50x64
+        masks = torch.eq(words, 0)  # 比较元素相等性 50x64
         pos = get_long_tensor(batch[1], batch_size)
         ner = get_long_tensor(batch[2], batch_size)
         deprel = get_long_tensor(batch[3], batch_size)
@@ -113,7 +114,7 @@ class DataLoader(object):
         head_berkeley = get_long_tensor(batch[10], batch_size)
         deprel_berkeley = get_long_tensor(batch[11], batch_size)
 
-        rels = torch.LongTensor(batch[9])
+        rels = torch.LongTensor(batch[9]) # shape=50
 
         return (words, masks, pos, ner, deprel, head, subj_positions, obj_positions,
                 subj_type, obj_type, rels, orig_idx, head_berkeley, deprel_berkeley)

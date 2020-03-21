@@ -78,10 +78,10 @@ def unpack_batch(batch, cuda):
 class GCNTrainer(Trainer):
     def __init__(self, opt, emb_matrix=None):
         self.opt = opt
-        self.emb_matrix = emb_matrix
+        self.emb_matrix = emb_matrix # ndarray_shape(53953,300)
         self.model = GCNClassifier(opt, emb_matrix=emb_matrix)
         self.criterion = nn.CrossEntropyLoss()
-        self.parameters = [p for p in self.model.parameters() if p.requires_grad]
+        self.parameters = [p for p in self.model.parameters() if p.requires_grad] # [p *81]
         if opt['cuda']:
             self.model.cuda()
             self.criterion.cuda()

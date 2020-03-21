@@ -19,14 +19,14 @@ class GCNClassifier(nn.Module):
 
     def __init__(self, opt, emb_matrix=None):
         super().__init__()
-        self.gcn_model = GCNRelationModel(opt, emb_matrix=emb_matrix) # emb_matrix is ndarray(53953, 300)
-        in_dim = opt['hidden_dim'] # 300
+        self.gcn_model = GCNRelationModel(opt, emb_matrix=emb_matrix)  # emb_matrix is ndarray(53953, 300)
+        in_dim = opt['hidden_dim']  # 300
         self.classifier = nn.Linear(in_dim, opt['num_class'])
         self.opt = opt
 
     def forward(self, inputs):
         outputs, pooling_output = self.gcn_model(inputs)
-        logits = self.classifier(outputs)
+        logits = self.classifier(outputs)  # 50x42
         return logits, pooling_output
 
 
@@ -36,19 +36,24 @@ class GCNRelationModel(nn.Module):
         self.opt = opt
         self.emb_matrix = emb_matrix
 
+        self.use_parsers = []
+        for use in [opt['use_stanford'], opt['use_berkeley']]:
+            if use: self.use_parsers.append(1)
+            else: self.use_parsers.append(0)
+
         # create embedding layers
-        self.emb = nn.Embedding(opt['vocab_size'], opt['emb_dim'], padding_idx=constant.PAD_ID)
-        self.pos_emb = nn.Embedding(len(constant.POS_TO_ID), opt['pos_dim']) if opt['pos_dim'] > 0 else None
-        self.ner_emb = nn.Embedding(len(constant.NER_TO_ID), opt['ner_dim']) if opt['ner_dim'] > 0 else None
-        embeddings = (self.emb, self.pos_emb, self.ner_emb)
+        self.emb = nn.Embedding(opt['vocab_size'], opt['emb_dim'], padding_idx=constant.PAD_ID)  # 一个保存了固定字典和大小的简单查找表。
+        self.pos_emb = nn.Embedding(len(constant.POS_TO_ID), opt['pos_dim']) if opt['pos_dim'] > 0 else None  # 30d
+        self.ner_emb = nn.Embedding(len(constant.NER_TO_ID), opt['ner_dim']) if opt['ner_dim'] > 0 else None  # 30d
+        embeddings = (self.emb, self.pos_emb, self.ner_emb)  # 嵌入表 tuple(emb(53953,300), emb(47,30), emb(15,30))
         self.init_embeddings()
 
         # gcn layer
         self.gcn = AGGCN(opt, embeddings)
 
         # mlp output layer
-        in_dim = opt['hidden_dim'] * 3 # 900，因为是AGGCN输出池化+两个实体的编码池化
-        layers = [nn.Linear(in_dim, opt['hidden_dim']), nn.ReLU()] # In 900 out 300 bias true
+        in_dim = opt['hidden_dim'] * 3  # 900，因为是AGGCN输出池化+两个实体的编码池化
+        layers = [nn.Linear(in_dim, opt['hidden_dim']), nn.ReLU()]  # In 900 out 300 bias true
         for _ in range(self.opt['mlp_layers'] - 1):
             layers += [nn.Linear(opt['hidden_dim'], opt['hidden_dim']), nn.ReLU()]
         self.out_mlp = nn.Sequential(*layers)
@@ -70,37 +75,42 @@ class GCNRelationModel(nn.Module):
             print("Finetune all embeddings.")
 
     def forward(self, inputs):
-        words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type, head_berkeley, deprel_berkeley = inputs # unpack
-        l = (masks.data.cpu().numpy() == 0).astype(np.int64).sum(1) # l 是各个句子的长度
-        maxlen = max(l)
+        words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type, head_berkeley, deprel_berkeley = inputs  # unpack
+        l = (masks.data.cpu().numpy() == 0).astype(np.int64).sum(1)  # l 是各个句子的长度 [64,...,14 *50]
+        maxlen = max(l)  # 64
 
         def inputs_to_tree_reps(head, l):
             trees = [head_to_tree(head[i], l[i]) for i in range(len(l))]  # root of the tree objects
             adj = [tree_to_adj(maxlen, tree, directed=False).reshape(1, maxlen, maxlen) for tree in trees]
-            adj = np.concatenate(adj, axis=0) # 二维转一维
+            adj = np.concatenate(adj, axis=0)  # 二维转一维
             adj = torch.from_numpy(adj)
             return Variable(adj.cuda()) if self.opt['cuda'] else Variable(adj)
 
         def inputs_to_adj_reps(head, l):
             adj = [head_to_adj(head[i], l[i], maxlen, directed=False).reshape(1, maxlen, maxlen) for i in range(len(l))]
-            adj = np.concatenate(adj, axis=0) # shape=(len,)
+            adj = np.concatenate(adj, axis=0)  # shape=(maxlen * adj_num, adj)
             adj = torch.from_numpy(adj)
-            return  Variable(adj.cuda()) if self.opt['cuda'] else Variable(adj)
+            return Variable(adj.cuda()) if self.opt['cuda'] else Variable(adj)
 
-        adj = inputs_to_tree_reps(head.data, l) # head -> 邻接矩阵 -> 转成一维cuda变量
+        adj = inputs_to_tree_reps(head.data, l)  # head -> 邻接矩阵 -> 转成一维cuda变量
         adj_berkeley = inputs_to_adj_reps(head_berkeley.data, l)
 
+        if sum(self.use_parsers) == 0: adj_list = [adj]
+        else:
+            adj_list = []
+            if self.use_parsers[0]: adj_list.append(adj)
+            if self.use_parsers[1]: adj_list.append(adj_berkeley)
         # h, pool_mask = self.gcn(adj, inputs)
-        h, pool_mask = self.gcn(adj_berkeley, inputs)
+        h, pool_mask = self.gcn(adj_list, inputs)
 
         # pooling
         subj_mask, obj_mask = subj_pos.eq(0).eq(0).unsqueeze(2), obj_pos.eq(0).eq(0).unsqueeze(2)  # invert mask
         pool_type = self.opt['pooling']
-        h_out = pool(h, pool_mask, type=pool_type)
+        h_out = pool(h, pool_mask, type=pool_type)  # 50x300
         subj_out = pool(h, subj_mask, type="max")
-        obj_out = pool(h, obj_mask, type="max") # todo 将实体mask掉？
-        outputs = torch.cat([h_out, subj_out, obj_out], dim=1)
-        outputs = self.out_mlp(outputs)
+        obj_out = pool(h, obj_mask, type="max")  # todo 将实体mask掉？ 50x300
+        outputs = torch.cat([h_out, subj_out, obj_out], dim=1)  # 50x900
+        outputs = self.out_mlp(outputs)  # 50x300
 
         return outputs, h_out
 
@@ -109,34 +119,41 @@ class AGGCN(nn.Module):
     def __init__(self, opt, embeddings):
         super().__init__()
         self.opt = opt
-        self.in_dim = opt['emb_dim'] + opt['pos_dim'] + opt['ner_dim']
-        self.emb, self.pos_emb, self.ner_emb = embeddings
+        self.in_dim = opt['emb_dim'] + opt['pos_dim'] + opt['ner_dim']  # 360
+        self.emb, self.pos_emb, self.ner_emb = embeddings  # 三个嵌入表
         self.use_cuda = opt['cuda']
         self.mem_dim = opt['hidden_dim']
 
         # rnn layer
         if self.opt.get('rnn', False):
-            self.input_W_R = nn.Linear(self.in_dim, opt['rnn_hidden'])
-            self.rnn = nn.LSTM(opt['rnn_hidden'], opt['rnn_hidden'], opt['rnn_layers'], batch_first=True, \
-                               dropout=opt['rnn_dropout'], bidirectional=True)
-            self.in_dim = opt['rnn_hidden'] * 2 # 双向
+            self.input_W_R = nn.Linear(self.in_dim, opt['rnn_hidden'])  # 360x300
+            self.rnn = nn.LSTM(opt['rnn_hidden'], opt['rnn_hidden'], opt['rnn_layers'],  # 300x300
+                               batch_first=True, dropout=opt['rnn_dropout'], bidirectional=True)
+            self.in_dim = opt['rnn_hidden'] * 2  # 双向 600
             self.rnn_drop = nn.Dropout(opt['rnn_dropout'])  # use on last layer output
-        self.input_W_G = nn.Linear(self.in_dim, self.mem_dim)
+        self.input_W_G = nn.Linear(self.in_dim, self.mem_dim)  # 600x300 or 360x300
 
         self.in_drop = nn.Dropout(opt['input_dropout'])
-        self.num_layers = opt['num_layers'] # Num of AGGCN blocks.
+        self.num_layers = opt['num_layers']  # Num of AGGCN blocks. 2
 
         self.layers = nn.ModuleList()
 
-        self.heads = opt['heads'] # Num of heads in multi-head attention.
-        self.sublayer_first = opt['sublayer_first'] # Num of the first sublayers in dcgcn block.
-        self.sublayer_second = opt['sublayer_second'] # Num of the second sublayers in dcgcn block.
+        self.parsers = 0
+        for use in [opt['use_stanford'], opt['use_berkeley']]:
+            if use: self.parsers += 1
+        self.heads = opt['heads']  # Num of heads in multi-head attention. 2 or 3
+        self.sublayer_first = opt['sublayer_first']  # Num of the first sublayers in dcgcn block. 2
+        self.sublayer_second = opt['sublayer_second']  # Num of the second sublayers in dcgcn block. 4
 
         # gcn layer
         for i in range(self.num_layers):
             if i == 0:
-                self.layers.append(GraphConvLayer(opt, self.mem_dim, self.sublayer_first))
-                self.layers.append(GraphConvLayer(opt, self.mem_dim, self.sublayer_second))
+                if self.parsers < 2:
+                    self.layers.append(GraphConvLayer(opt, self.mem_dim, self.sublayer_first))  # 输出300d
+                    self.layers.append(GraphConvLayer(opt, self.mem_dim, self.sublayer_second))
+                else:
+                    self.layers.append(MultiParserGraphConvLayer(opt, self.mem_dim, self.sublayer_first, self.parsers))
+                    self.layers.append(MultiParserGraphConvLayer(opt, self.mem_dim, self.sublayer_second, self.parsers))
             else:
                 self.layers.append(MultiGraphConvLayer(opt, self.mem_dim, self.sublayer_first, self.heads))
                 self.layers.append(MultiGraphConvLayer(opt, self.mem_dim, self.sublayer_second, self.heads))
@@ -148,47 +165,59 @@ class AGGCN(nn.Module):
     def encode_with_rnn(self, rnn_inputs, masks, batch_size):
         seq_lens = list(masks.data.eq(constant.PAD_ID).long().sum(1).squeeze())
         h0, c0 = rnn_zero_state(batch_size, self.opt['rnn_hidden'], self.opt['rnn_layers'])
-        rnn_inputs = nn.utils.rnn.pack_padded_sequence(rnn_inputs, seq_lens, batch_first=True)
+        rnn_inputs = nn.utils.rnn.pack_padded_sequence(rnn_inputs, seq_lens, batch_first=True)  # todo 看文档
         rnn_outputs, (ht, ct) = self.rnn(rnn_inputs, (h0, c0))
         rnn_outputs, _ = nn.utils.rnn.pad_packed_sequence(rnn_outputs, batch_first=True)
-        return rnn_outputs
+        return rnn_outputs  # 50x64x600
 
-    def forward(self, adj, inputs):
+    def forward(self, adj_list, inputs):
         # words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type = inputs # unpack
         words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type, head_berkeley, deprel_berkeley = inputs  # unpack
-        src_mask = (words != constant.PAD_ID).unsqueeze(-2)
-        word_embs = self.emb(words)
-        embs = [word_embs]
+        # adj:50x64x64 marsks:50x64
+        src_mask = (words != constant.PAD_ID).unsqueeze(-2)  # shape=(50,1,64)
+        word_embs = self.emb(words)  # words 50x64 -> word_embs 50x64x300
+        embs = [word_embs]  # [50x64x300]
 
         if self.opt['pos_dim'] > 0:
             embs += [self.pos_emb(pos)]
         if self.opt['ner_dim'] > 0:
-            embs += [self.ner_emb(ner)]
-        embs = torch.cat(embs, dim=2) # 在第二维上连接
+            embs += [self.ner_emb(ner)]  # embs: [ 50x64x300, 50x64x30, 50x64x30]
+        embs = torch.cat(embs, dim=2)  # 在第二维上连接 embs: [50x64x360]
         embs = self.in_drop(embs)  # dropout
 
         if self.opt.get('rnn', False):
-            embs = self.input_W_R(embs)
-            gcn_inputs = self.rnn_drop(self.encode_with_rnn(embs, masks, words.size()[0]))
+            embs = self.input_W_R(embs)  # 50x64x300
+            gcn_inputs = self.rnn_drop(self.encode_with_rnn(embs, masks, words.size()[0]))  # 50x64x600
         else:
             gcn_inputs = embs
-        gcn_inputs = self.input_W_G(gcn_inputs)
+        gcn_inputs = self.input_W_G(gcn_inputs)  # 50x64x300
 
         layer_list = []
         outputs = gcn_inputs
-        mask = (adj.sum(2) + adj.sum(1)).eq(0).unsqueeze(2)
+
+        # mask = (adj.sum(2) + adj.sum(1)).eq(0).unsqueeze(2)  # 50x64x1 mask 不与其他点相连接的点
+        du = (adj_list[0].sum(2) + adj_list[0].sum(1))
+        for i in range(1, len(adj_list)):
+            du = (adj_list[i].sum(2) + adj_list[i].sum(1))
+        mask = du.eq(0).unsqueeze(2) # todo 比较多的 0
+
         for i in range(len(self.layers)):
             if i < 2:
-                outputs = self.layers[i](adj, outputs)
-                layer_list.append(outputs)
+                if self.parsers < 2:
+                    outputs = self.layers[i](adj_list[0], outputs)  # 50x64x300
+                    layer_list.append(outputs)
+                else:
+                    outputs = self.layers[i](adj_list,outputs) # check if right
+                    layer_list.append(outputs)
             else:
-                attn_tensor = self.attn(outputs, outputs, src_mask)
-                attn_adj_list = [attn_adj.squeeze(1) for attn_adj in torch.split(attn_tensor, 1, dim=1)]
-                outputs = self.layers[i](attn_adj_list, outputs)
-                layer_list.append(outputs)
+                attn_tensor = self.attn(outputs, outputs, src_mask)  # attends 50x3x64x64
+                attn_adj_list = [attn_adj.squeeze(1) for attn_adj in
+                                 torch.split(attn_tensor, 1, dim=1)]  # [50x64x64 *3]
+                outputs = self.layers[i](attn_adj_list, outputs)  # 50x64x300
+                layer_list.append(outputs)  # [50x64x300 *n]
 
-        aggregate_out = torch.cat(layer_list, dim=2)
-        dcgcn_output = self.aggregate_W(aggregate_out)
+        aggregate_out = torch.cat(layer_list, dim=2)  # 50x64x1200
+        dcgcn_output = self.aggregate_W(aggregate_out)  # 50x64x300
 
         return dcgcn_output, mask
 
@@ -199,9 +228,9 @@ class GraphConvLayer(nn.Module):
     def __init__(self, opt, mem_dim, layers):
         super(GraphConvLayer, self).__init__()
         self.opt = opt
-        self.mem_dim = mem_dim # 300
-        self.layers = layers # 2 or 4 子dgcn的层数
-        self.head_dim = self.mem_dim // self.layers # 150 应该是每个小 GCN 的维度
+        self.mem_dim = mem_dim  # 300 hidden_dim
+        self.layers = layers  # 2 or 4 - 子dgcn的层数
+        self.head_dim = self.mem_dim // self.layers  # 150 应该是每个子 GCN 的 hidden 维度
         self.gcn_drop = nn.Dropout(opt['gcn_dropout'])
 
         # linear transformation
@@ -212,12 +241,12 @@ class GraphConvLayer(nn.Module):
         for i in range(self.layers):
             self.weight_list.append(nn.Linear((self.mem_dim + self.head_dim * i), self.head_dim))
 
-        self.weight_list = self.weight_list.cuda()
+        self.weight_list = self.weight_list.cuda()  # {Linear(300,150),Linear(450,150)}
         self.linear_output = self.linear_output.cuda()
 
     def forward(self, adj, gcn_inputs):
         # gcn layer
-        denom = adj.sum(2).unsqueeze(2) + 1 # 具体结果？
+        denom = adj.sum(2).unsqueeze(2) + 1  # 具体结果？
 
         outputs = gcn_inputs
         cache_list = [outputs]
@@ -241,21 +270,75 @@ class GraphConvLayer(nn.Module):
         return out
 
 
+class MultiParserGraphConvLayer(nn.Module):
+    """A GCN module operated on input dependency graph"""
+
+    def __init__(self, opt, mem_dim, layers, parsers_num):
+        super(MultiParserGraphConvLayer, self).__init__()
+        self.opt = opt
+        self.mem_dim = mem_dim  # hidden_dim
+        self.layers = layers  # denselayer_num
+        self.sub_dim = self.mem_dim // self.layers  # each sublayer
+        self.parsers = parsers_num
+        self.gcn_drop = nn.Dropout(opt['gcn_dropout'])
+
+        # dcgcn layer
+        self.weight_list = nn.ModuleList()
+        self.Linear = nn.Linear(self.mem_dim * self.parsers, self.mem_dim)
+
+        for i in range(self.parsers):
+            for j in range(self.layers):
+                self.weight_list.append(nn.Linear(
+                    self.mem_dim + self.sub_dim * j, self.sub_dim))
+
+        self.weight_list = self.weight_list.cuda()
+        self.Linear = self.Linear.cuda()
+
+    def forward(self, adj_list, gcn_input):
+        multi_parser_list = []  # every parser's dcgcn output
+        for i in range(self.parsers):
+            adj = adj_list[i]
+            denom = adj.sum(2).unsqueeze(2) + 1 # 50
+            curlayer_input = gcn_input
+            nextlayer_input = [curlayer_input]
+            layers_outputs = []
+            for l in range(self.layers):
+                index = i * self.layers + l
+                Ax = adj.bmm(curlayer_input)
+                AxW = self.weight_list[index](Ax)  # self loop
+                AxW = AxW + self.weight_list[index](curlayer_input)  # sum{}
+                AxW = AxW / denom
+                gAxW = F.relu(AxW)
+                nextlayer_input.append(gAxW)
+                curlayer_input = torch.cat(nextlayer_input, dim=2)
+                layers_outputs.append(self.gcn_drop(gAxW))
+
+            one_dcgcn_output = torch.cat(layers_outputs, dim=2)
+            one_dcgcn_output = one_dcgcn_output + gcn_input
+
+            multi_parser_list.append(one_dcgcn_output)  # [50x64x300,50x64x300..]
+
+        multi_parser_output = torch.cat(multi_parser_list, dim=2)  # 50x64x(300n)
+        out = self.Linear(multi_parser_output)  # 50x64x300
+
+        return out
+
+
 class MultiGraphConvLayer(nn.Module):
     """ A GCN module operated on dependency graphs. """
 
     def __init__(self, opt, mem_dim, layers, heads):
         super(MultiGraphConvLayer, self).__init__()
         self.opt = opt
-        self.mem_dim = mem_dim # 300
-        self.layers = layers # 2、4 子 dgcn
+        self.mem_dim = mem_dim  # 300
+        self.layers = layers  # 2、4 子 dgcn
         self.head_dim = self.mem_dim // self.layers
-        self.heads = heads # 3
+        self.heads = heads  # 3
         self.gcn_drop = nn.Dropout(opt['gcn_dropout'])
 
         # dcgcn layer
-        self.Linear = nn.Linear(self.mem_dim * self.heads, self.mem_dim)
         self.weight_list = nn.ModuleList()
+        self.Linear = nn.Linear(self.mem_dim * self.heads, self.mem_dim)
 
         for i in range(self.heads):
             for j in range(self.layers):
@@ -265,32 +348,31 @@ class MultiGraphConvLayer(nn.Module):
         self.Linear = self.Linear.cuda()
 
     def forward(self, adj_list, gcn_inputs):
-
         multi_head_list = []
         for i in range(self.heads):
-            adj = adj_list[i]
-            denom = adj.sum(2).unsqueeze(2) + 1
-            outputs = gcn_inputs
-            cache_list = [outputs]
-            output_list = []
+            adj = adj_list[i]  # adjlist[50x64x64,.. *3] masked and softmaxed
+            denom = adj.sum(2).unsqueeze(2) + 1  # 50x64x1
+            outputs = gcn_inputs  # 50x64x300 gcn 每个子layer的输入
+            cache_list = [outputs]  # 0.1x50x64x300 当前层的输入append 输出
+            output_list = []  # 每个子层的输出，（维度加起来应当是300）
             for l in range(self.layers):
-                index = i * self.layers + l
-                Ax = adj.bmm(outputs)
-                AxW = self.weight_list[index](Ax)
-                AxW = AxW + self.weight_list[index](outputs)  # self loop
+                index = i * self.layers + l  # 0,1 ,2,3 ,4,5
+                Ax = adj.bmm(outputs)  # 50x64x300 50x64x450 matrix multiply
+                AxW = self.weight_list[index](Ax)  # 50x64x150
+                AxW = AxW + self.weight_list[index](outputs)  # self loop # 50x64x150
                 AxW = AxW / denom
-                gAxW = F.relu(AxW)
-                cache_list.append(gAxW)
-                outputs = torch.cat(cache_list, dim=2)
-                output_list.append(self.gcn_drop(gAxW))
+                gAxW = F.relu(AxW)  # 50x64x150 50x64x150
+                cache_list.append(gAxW)  # [50x64x300,50x64x150,+50x64x150]
+                outputs = torch.cat(cache_list, dim=2)  # 50x64x450,50x64x600
+                output_list.append(self.gcn_drop(gAxW))  # 2x50x64x150
 
-            gcn_ouputs = torch.cat(output_list, dim=2)
-            gcn_ouputs = gcn_ouputs + gcn_inputs
+            gcn_ouputs = torch.cat(output_list, dim=2)  # [50x64x150,50x64x150] -> 50x64x300
+            gcn_ouputs = gcn_ouputs + gcn_inputs  # 50x64x300
 
-            multi_head_list.append(gcn_ouputs)
+            multi_head_list.append(gcn_ouputs)  # [50x64x300,50x64x300,50x64x300]
 
-        final_output = torch.cat(multi_head_list, dim=2)
-        out = self.Linear(final_output)
+        final_output = torch.cat(multi_head_list, dim=2)  # 3x50x64x300 -> 50x64x900
+        out = self.Linear(final_output)  # 50x64x300
 
         return out
 
@@ -308,19 +390,19 @@ def pool(h, mask, type='max'):
 
 
 def rnn_zero_state(batch_size, hidden_dim, num_layers, bidirectional=True):
-    total_layers = num_layers * 2 if bidirectional else num_layers
-    state_shape = (total_layers, batch_size, hidden_dim)
-    h0 = c0 = Variable(torch.zeros(*state_shape), requires_grad=False)
+    total_layers = num_layers * 2 if bidirectional else num_layers  # 2
+    state_shape = (total_layers, batch_size, hidden_dim)  # (2,50,300)
+    h0 = c0 = Variable(torch.zeros(*state_shape), requires_grad=False)  # todo 理解这里
     return h0.cuda(), c0.cuda()
 
 
 def attention(query, key, mask=None, dropout=None):
-    d_k = query.size(-1)
-    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
-    if mask is not None:
-        scores = scores.masked_fill(mask == 0, -1e9)
+    d_k = query.size(-1)  # 100
+    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)  # 50x3x64x64
+    if mask is not None:  # 50x1x1x64
+        scores = scores.masked_fill(mask == 0, -1e9)  # mask 值为1 的地方由value填充
 
-    p_attn = F.softmax(scores, dim=-1)
+    p_attn = F.softmax(scores, dim=-1)  # 最后一维的和为 1
     if dropout is not None:
         p_attn = dropout(p_attn)
 
@@ -337,20 +419,19 @@ class MultiHeadAttention(nn.Module):
         super(MultiHeadAttention, self).__init__()
         assert d_model % h == 0
 
-        self.d_k = d_model // h
+        self.d_k = d_model // h  # hidden_d // heads_num =100
         self.h = h
-        self.linears = clones(nn.Linear(d_model, d_model), 2)
+        self.linears = clones(nn.Linear(d_model, d_model), 2)  # 两层 linear(d_hidden x d_hidden)
         self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, query, key, mask=None):
-        if mask is not None:
-            mask = mask.unsqueeze(1)
+        if mask is not None:  # 50x1x64
+            mask = mask.unsqueeze(1)  # 50x1x1x64
 
-        nbatches = query.size(0)
+        nbatches = query.size(0)  # query:50x64x300,
 
         query, key = [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
-                             for l, x in zip(self.linears, (query, key))]
-        attn = attention(query, key, mask=mask, dropout=self.dropout)
+                      for l, x in zip(self.linears, (query, key))]  # 50x3x64x100
+        attn = attention(query, key, mask=mask, dropout=self.dropout)  # 50x3x64x64 masked softmaxed
 
         return attn
-

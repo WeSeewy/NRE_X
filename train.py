@@ -1,7 +1,6 @@
 """
 Train a model on TACRED.
 """
-# todo 输入的不是tree 而是tree+自环
 import os
 import sys
 from datetime import datetime
@@ -11,6 +10,8 @@ import random
 import argparse
 from shutil import copyfile
 import torch
+import matplotlib
+import matplotlib.pyplot as plt
 import torch.nn as nn
 import torch.optim as optim
 from torch.autograd import Variable
@@ -37,10 +38,10 @@ parser.add_argument('--lower', dest='lower', action='store_true', help='Lowercas
 parser.add_argument('--no-lower', dest='lower', action='store_false')
 parser.set_defaults(lower=False)
 
-parser.add_argument('--use_stanford', dest='parser_stanford', action='store_true')
-parser.add_argument('--use_berkeley', dest='parser_berkeley', action='store_true')
-parser.set_defaults(parser_stanford=False)
-parser.set_defaults(parser_berkeley=False)
+parser.add_argument('--use_stanford', dest='use_stanford', action='store_true')
+parser.add_argument('--use_berkeley', dest='use_berkeley', action='store_true')
+parser.set_defaults(use_stanford=False)
+parser.set_defaults(use_berkeley=False)
 parser.add_argument('--heads', type=int, default=3, help='Num of heads in multi-head attention.')
 parser.add_argument('--sublayer_first', type=int, default=2, help='Num of the first sublayers in dcgcn block.')
 parser.add_argument('--sublayer_second', type=int, default=4, help='Num of the second sublayers in dcgcn block.')
@@ -110,7 +111,7 @@ print("Loading data from {} with batch size {}...".format(opt['data_dir'], opt['
 train_batch = DataLoader(opt['data_dir'] + '/train_std_ber.json', opt['batch_size'], opt, vocab, evaluation=False)
 dev_batch = DataLoader(opt['data_dir'] + '/dev_std_ber.json', opt['batch_size'], opt, vocab, evaluation=True)
 model_id = opt['id'] if len(opt['id']) > 1 else '0' + opt['id']
-model_save_dir = opt['save_dir'] + '/' + model_id
+model_save_dir = opt['save_dir'] + '/' + model_id # './saved_models/00'
 opt['model_save_dir'] = model_save_dir
 helper.ensure_dir(model_save_dir, verbose=True)
 
@@ -134,7 +135,7 @@ else:
     trainer = GCNTrainer(model_opt)
     trainer.load(model_file)
 
-id2label = dict([(v,k) for k,v in label2id.items()]) # relation label
+id2label = dict([(v,k) for k,v in label2id.items()]) # relation label {0:'no_relation',... *42}
 dev_score_history = []
 current_lr = opt['lr'] # 初始 0.7
 
@@ -143,9 +144,13 @@ global_start_time = time.time()
 format_str = '{}: step {}/{} (epoch {}/{}), loss = {:.6f} ({:.3f} sec/batch), lr: {:.6f}'
 max_steps = len(train_batch) * opt['num_epoch'] # 1363*100=136300，总共的step数
 
+x1 = []; y1 = [] # 每个 step 的 loss
+x2 = []; y2loss = []; y2p = []; y2r = []; y2f = [] # 每个 epoch 的p r f
+
 # start training
 for epoch in range(1, opt['num_epoch']+1):
-    train_loss = 0
+    train_loss = 0 # 一个 epoch 的总 loss （step loss 之和）
+
     for i, batch in enumerate(train_batch):
         start_time = time.time()
         global_step += 1
@@ -155,6 +160,7 @@ for epoch in range(1, opt['num_epoch']+1):
             duration = time.time() - start_time
             print(format_str.format(datetime.now(), global_step, max_steps, epoch,\
                     opt['num_epoch'], loss, duration, current_lr))
+        x1.append(global_step); y1.append(loss)
 
     # eval on dev
     print("Evaluating on dev set...")
@@ -172,6 +178,10 @@ for epoch in range(1, opt['num_epoch']+1):
     print("epoch {}: train_loss = {:.6f}, dev_loss = {:.6f}, dev_f1 = {:.4f}".format(epoch,\
         train_loss, dev_loss, dev_f1))
     dev_score = dev_f1
+    y2p.append(dev_p)
+    y2r.append(dev_r)
+    x2.append(global_step)
+    y2loss.append(dev_loss)
     file_logger.log("{}\t{:.6f}\t{:.6f}\t{:.4f}\t{:.4f}".format(epoch, train_loss, dev_loss, dev_score, max([dev_score] + dev_score_history)))
 
     # save
@@ -196,3 +206,14 @@ for epoch in range(1, opt['num_epoch']+1):
 
 print("Training ended with {} epochs.".format(epoch))
 
+y2f = dev_score_history
+# matplotlib.use('AGG')
+plt.figure()
+plt.subplot(211)
+plt.plot(x1,y1,color='b',linestyle='-',)# :
+plt.plot(x2,y2loss,color='g',linestyle='-') # -.
+plt.subplot(212)
+plt.plot(x2,y2p,color='y',linestyle='--')
+plt.plot(x2,y2r,color='m',linestyle='--')
+plt.plot(x2,y2f, color='r',linestyle='-')
+plt.savefig(model_save_dir + '/scores.png')
