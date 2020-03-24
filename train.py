@@ -10,13 +10,14 @@ import random
 import argparse
 from shutil import copyfile
 import torch
+import math
 import matplotlib
 import matplotlib.pyplot as plt
 import torch.nn as nn
 import torch.optim as optim
 from torch.autograd import Variable
 
-from data.loader import DataLoader
+from data.loader import DataLoader, DataPrefetcher
 from model.trainer import GCNTrainer
 from utils import torch_utils, scorer, constant, helper
 from utils.vocab import Vocab
@@ -40,8 +41,10 @@ parser.set_defaults(lower=False)
 
 parser.add_argument('--use_stanford', dest='use_stanford', action='store_true')
 parser.add_argument('--use_berkeley', dest='use_berkeley', action='store_true')
+parser.add_argument('--use_sequence', dest='use_sequence', action='store_true')
 parser.set_defaults(use_stanford=False)
 parser.set_defaults(use_berkeley=False)
+parser.set_defaults(use_sequence=False)
 parser.add_argument('--heads', type=int, default=3, help='Num of heads in multi-head attention.')
 parser.add_argument('--sublayer_first', type=int, default=2, help='Num of the first sublayers in dcgcn block.')
 parser.add_argument('--sublayer_second', type=int, default=4, help='Num of the second sublayers in dcgcn block.')
@@ -63,7 +66,7 @@ parser.add_argument('--optim', choices=['sgd', 'adagrad', 'adam', 'adamax'], def
 parser.add_argument('--num_epoch', type=int, default=100, help='Number of total training epochs.')
 parser.add_argument('--batch_size', type=int, default=50, help='Training batch size.')
 parser.add_argument('--max_grad_norm', type=float, default=5.0, help='Gradient clipping.')
-parser.add_argument('--log_step', type=int, default=20, help='Print log every k steps.')
+parser.add_argument('--log_step', type=int, default=50, help='Print log every k steps.')
 parser.add_argument('--log', type=str, default='logs.txt', help='Write training log to file.')
 parser.add_argument('--save_epoch', type=int, default=100, help='Save model checkpoints every k epochs.')
 parser.add_argument('--save_dir', type=str, default='./saved_models', help='Root dir for saving models.')
@@ -151,9 +154,22 @@ x2 = []; y2loss = []; y2p = []; y2r = []; y2f = [] # 每个 epoch 的p r f
 for epoch in range(1, opt['num_epoch']+1):
     train_loss = 0 # 一个 epoch 的总 loss （step loss 之和）
 
-    for i, batch in enumerate(train_batch):
-        start_time = time.time()
+    # for i, batch in enumerate(train_batch):
+    #     start_time = time.time()
+    #     global_step += 1
+    #     loss = trainer.update(batch)
+    #     train_loss += loss
+    #     if global_step % opt['log_step'] == 0:
+    #         duration = time.time() - start_time
+    #         print(format_str.format(datetime.now(), global_step, max_steps, epoch,\
+    #                 opt['num_epoch'], loss, duration, current_lr))
+    #     x1.append(global_step); y1.append(loss)
+
+    prefetcher = DataPrefetcher(train_batch)
+    batch = prefetcher.next()
+    while batch is not None:
         global_step += 1
+        start_time = time.time()
         loss = trainer.update(batch)
         train_loss += loss
         if global_step % opt['log_step'] == 0:
@@ -161,15 +177,24 @@ for epoch in range(1, opt['num_epoch']+1):
             print(format_str.format(datetime.now(), global_step, max_steps, epoch,\
                     opt['num_epoch'], loss, duration, current_lr))
         x1.append(global_step); y1.append(loss)
+        batch = prefetcher.next()
 
     # eval on dev
     print("Evaluating on dev set...")
     predictions = []
     dev_loss = 0
-    for i, batch in enumerate(dev_batch):
+    # for i, batch in enumerate(dev_batch):
+    #     preds, _, loss = trainer.predict(batch)
+    #     predictions += preds
+    #     dev_loss += loss
+    prefetcher = DataPrefetcher(dev_batch)
+    batch = prefetcher.next()
+    while batch is not None:
         preds, _, loss = trainer.predict(batch)
         predictions += preds
         dev_loss += loss
+        batch = prefetcher.next()
+
     predictions = [id2label[p] for p in predictions]
     train_loss = train_loss / train_batch.num_examples * opt['batch_size'] # avg loss per batch
     dev_loss = dev_loss / dev_batch.num_examples * opt['batch_size']
@@ -207,10 +232,10 @@ for epoch in range(1, opt['num_epoch']+1):
 print("Training ended with {} epochs.".format(epoch))
 
 y2f = dev_score_history
-# matplotlib.use('AGG')
+matplotlib.use('AGG')
 plt.figure()
 plt.subplot(211)
-plt.plot(x1,y1,color='b',linestyle='-',)# :
+plt.plot(x1,[math.log2(y) for y in y1],color='b',linestyle='-',)# :
 plt.plot(x2,y2loss,color='g',linestyle='-') # -.
 plt.subplot(212)
 plt.plot(x2,y2p,color='y',linestyle='--')

@@ -8,6 +8,7 @@ import torch
 import numpy as np
 
 from utils import constant
+from torch.autograd import Variable
 
 class DataLoader(object):
     """
@@ -59,6 +60,7 @@ class DataLoader(object):
             deprel = map_to_ids(d['stanford_deprel'], constant.DEPREL_TO_ID)
             head = [int(x) for x in d['stanford_head']] # {list_of_int:tokens_len}
             head_berkeley = [int(x) for x in d['berkeley_head']]
+            head_sequence = [x for x in range(len(head))]
             deprel_berkeley = map_to_ids(d['berkeley_deprel'], constant.DEPREL_TO_ID)
             assert any([x == 0 for x in head])
             assert any([x == 0 for x in head_berkeley])
@@ -68,7 +70,8 @@ class DataLoader(object):
             subj_type = [constant.SUBJ_NER_TO_ID[d['subj_type']]] # int
             obj_type = [constant.OBJ_NER_TO_ID[d['obj_type']]]
             relation = self.label2id[d['relation']]
-            processed += [(tokens, pos, ner, deprel, head, subj_positions, obj_positions, subj_type, obj_type, relation, head_berkeley, deprel_berkeley)]
+            processed += [(tokens, pos, ner, deprel, head, subj_positions, obj_positions, subj_type, obj_type,
+                           relation, head_berkeley, deprel_berkeley, head_sequence)]
         return processed # {list_of_{tuple:12}:len(data)}
 
     def gold(self):
@@ -88,7 +91,7 @@ class DataLoader(object):
         batch_size = len(batch) # 50
         batch = list(zip(*batch)) # zip 接受一系列可迭代的对象作为参数，将对象中对应的元素打包成一个个tuple（元组）
         # [[token_list]*50, [pos_list]*50,... *12]
-        assert len(batch) == 10+2  # 相当于行列颠倒了
+        assert len(batch) == 10+3  # 相当于行列颠倒了
 
         # sort all fields by lens for easy RNN operations
         lens = [len(x) for x in batch[0]] # 50个句子各自的长度(排序前)
@@ -113,11 +116,13 @@ class DataLoader(object):
         obj_type = get_long_tensor(batch[8], batch_size)
         head_berkeley = get_long_tensor(batch[10], batch_size)
         deprel_berkeley = get_long_tensor(batch[11], batch_size)
+        head_sequence = get_long_tensor(batch[12], batch_size)
+        orig_idx = torch.IntTensor(orig_idx)
 
         rels = torch.LongTensor(batch[9]) # shape=50
 
         return (words, masks, pos, ner, deprel, head, subj_positions, obj_positions,
-                subj_type, obj_type, rels, orig_idx, head_berkeley, deprel_berkeley)
+                subj_type, obj_type, rels, orig_idx, head_berkeley, deprel_berkeley,head_sequence)
 
     def __iter__(self):
         for i in range(self.__len__()):
@@ -156,3 +161,24 @@ def word_dropout(tokens, dropout):
     return [constant.UNK_ID if x != constant.UNK_ID and np.random.random() < dropout \
             else x for x in tokens]
 
+
+class DataPrefetcher():
+    def __init__(self, loader):
+        self.loader = iter(loader)
+        self.stream = torch.cuda.Stream()
+        self.preload()
+
+    def preload(self):
+        try:
+            self.batch = next(self.loader)
+        except StopIteration:
+            self.batch = None
+            return
+        with torch.cuda.stream(self.stream):
+            self.batch = [Variable(b.cuda(non_blocking=True)) for b in self.batch[:]]
+
+    def next(self):
+        torch.cuda.current_stream().wait_stream(self.stream)
+        batch = self.batch
+        self.preload()
+        return batch

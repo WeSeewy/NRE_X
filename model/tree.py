@@ -106,7 +106,6 @@ def head_to_adj(head, sent_len, max_len, directed=True):
     for i in range(sent_len):
         if i != head[i] - 1 and head[i] > 0:
             ret[head[i] - 1, i] = 1
-    # todo 添加自环？
     if not directed:
         ret = ret + ret.T
 

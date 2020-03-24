@@ -37,7 +37,7 @@ class GCNRelationModel(nn.Module):
         self.emb_matrix = emb_matrix
 
         self.use_parsers = []
-        for use in [opt['use_stanford'], opt['use_berkeley']]:
+        for use in [opt['use_stanford'], opt['use_berkeley'], opt['use_sequence']]:#
             if use: self.use_parsers.append(1)
             else: self.use_parsers.append(0)
 
@@ -52,7 +52,7 @@ class GCNRelationModel(nn.Module):
         self.gcn = AGGCN(opt, embeddings)
 
         # mlp output layer
-        in_dim = opt['hidden_dim'] * 3  # 900，因为是AGGCN输出池化+两个实体的编码池化
+        in_dim = opt['hidden_dim'] * 3  # 900，因为是AGGCN sentence 池化 + 两个实体的编码池化
         layers = [nn.Linear(in_dim, opt['hidden_dim']), nn.ReLU()]  # In 900 out 300 bias true
         for _ in range(self.opt['mlp_layers'] - 1):
             layers += [nn.Linear(opt['hidden_dim'], opt['hidden_dim']), nn.ReLU()]
@@ -75,16 +75,16 @@ class GCNRelationModel(nn.Module):
             print("Finetune all embeddings.")
 
     def forward(self, inputs):
-        words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type, head_berkeley, deprel_berkeley = inputs  # unpack
+        words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type, head_berkeley, deprel_berkeley, head_sequence= inputs  # unpack
         l = (masks.data.cpu().numpy() == 0).astype(np.int64).sum(1)  # l 是各个句子的长度 [64,...,14 *50]
         maxlen = max(l)  # 64
 
-        def inputs_to_tree_reps(head, l):
-            trees = [head_to_tree(head[i], l[i]) for i in range(len(l))]  # root of the tree objects
-            adj = [tree_to_adj(maxlen, tree, directed=False).reshape(1, maxlen, maxlen) for tree in trees]
-            adj = np.concatenate(adj, axis=0)  # 二维转一维
-            adj = torch.from_numpy(adj)
-            return Variable(adj.cuda()) if self.opt['cuda'] else Variable(adj)
+        # def inputs_to_tree_reps(head, l):
+        #     trees = [head_to_tree(head[i], l[i]) for i in range(len(l))]  # root of the tree objects
+        #     adj = [tree_to_adj(maxlen, tree, directed=False).reshape(1, maxlen, maxlen) for tree in trees]
+        #     adj = np.concatenate(adj, axis=0)  # 二维转一维
+        #     adj = torch.from_numpy(adj)
+        #     return Variable(adj.cuda()) if self.opt['cuda'] else Variable(adj)
 
         def inputs_to_adj_reps(head, l):
             adj = [head_to_adj(head[i], l[i], maxlen, directed=False).reshape(1, maxlen, maxlen) for i in range(len(l))]
@@ -92,20 +92,27 @@ class GCNRelationModel(nn.Module):
             adj = torch.from_numpy(adj)
             return Variable(adj.cuda()) if self.opt['cuda'] else Variable(adj)
 
-        adj = inputs_to_tree_reps(head.data, l)  # head -> 邻接矩阵 -> 转成一维cuda变量
+        # adj = inputs_to_tree_reps(head.data, l)  # head -> 邻接矩阵 -> 转成一维cuda变量
+        adj = inputs_to_adj_reps(head.data, l)
         adj_berkeley = inputs_to_adj_reps(head_berkeley.data, l)
+        adj_sequence = inputs_to_adj_reps(head_sequence.data, l)
 
         if sum(self.use_parsers) == 0: adj_list = [adj]
         else:
             adj_list = []
             if self.use_parsers[0]: adj_list.append(adj)
             if self.use_parsers[1]: adj_list.append(adj_berkeley)
+            if self.use_parsers[2]: adj_list.append(adj_sequence)
         # h, pool_mask = self.gcn(adj, inputs)
-        h, pool_mask = self.gcn(adj_list, inputs)
+        # h, pool_mask = self.gcn(adj_list, inputs)
+        pool_mask = masks.unsqueeze(2)
+        h = self.gcn(adj_list,inputs)
 
         # pooling
         subj_mask, obj_mask = subj_pos.eq(0).eq(0).unsqueeze(2), obj_pos.eq(0).eq(0).unsqueeze(2)  # invert mask
         pool_type = self.opt['pooling']
+        ##
+        # pool_mask = (subj_pos.eq(0)+obj_pos.eq(0)+masks).eq(0).eq(0).unsqueeze(2)
         h_out = pool(h, pool_mask, type=pool_type)  # 50x300
         subj_out = pool(h, subj_mask, type="max")
         obj_out = pool(h, obj_mask, type="max")  # todo 将实体mask掉？ 50x300
@@ -139,8 +146,11 @@ class AGGCN(nn.Module):
         self.layers = nn.ModuleList()
 
         self.parsers = 0
-        for use in [opt['use_stanford'], opt['use_berkeley']]:
-            if use: self.parsers += 1
+        self.use_parsers = []
+        for use in [opt['use_stanford'], opt['use_berkeley'], opt['use_sequence']]: #
+            if use: self.use_parsers.append(1);self.parsers += 1
+            else: self.use_parsers.append(0)
+
         self.heads = opt['heads']  # Num of heads in multi-head attention. 2 or 3
         self.sublayer_first = opt['sublayer_first']  # Num of the first sublayers in dcgcn block. 2
         self.sublayer_second = opt['sublayer_second']  # Num of the second sublayers in dcgcn block. 4
@@ -163,7 +173,7 @@ class AGGCN(nn.Module):
         self.attn = MultiHeadAttention(self.heads, self.mem_dim)
 
     def encode_with_rnn(self, rnn_inputs, masks, batch_size):
-        seq_lens = list(masks.data.eq(constant.PAD_ID).long().sum(1).squeeze())
+        seq_lens = list(masks.data.eq(0).long().sum(1).squeeze())
         h0, c0 = rnn_zero_state(batch_size, self.opt['rnn_hidden'], self.opt['rnn_layers'])
         rnn_inputs = nn.utils.rnn.pack_padded_sequence(rnn_inputs, seq_lens, batch_first=True)  # todo 看文档
         rnn_outputs, (ht, ct) = self.rnn(rnn_inputs, (h0, c0))
@@ -172,7 +182,7 @@ class AGGCN(nn.Module):
 
     def forward(self, adj_list, inputs):
         # words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type = inputs # unpack
-        words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type, head_berkeley, deprel_berkeley = inputs  # unpack
+        words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type, head_berkeley, deprel_berkeley, head_sequence = inputs  # unpack
         # adj:50x64x64 marsks:50x64
         src_mask = (words != constant.PAD_ID).unsqueeze(-2)  # shape=(50,1,64)
         word_embs = self.emb(words)  # words 50x64 -> word_embs 50x64x300
@@ -195,11 +205,13 @@ class AGGCN(nn.Module):
         layer_list = []
         outputs = gcn_inputs
 
-        # mask = (adj.sum(2) + adj.sum(1)).eq(0).unsqueeze(2)  # 50x64x1 mask 不与其他点相连接的点
-        du = (adj_list[0].sum(2) + adj_list[0].sum(1))
-        for i in range(1, len(adj_list)):
-            du = (adj_list[i].sum(2) + adj_list[i].sum(1))
-        mask = du.eq(0).unsqueeze(2) # todo 比较多的 0
+        # mask = (adj.sum(2) + adj.sum(1)).eq(0).unsqueeze(2)  # 50x64x1 屏蔽实体
+        # mask = (adj_list[0].sum(2) + adj_list[0].sum(1)).eq(0).unsqueeze(2)  # 50x64x1 屏蔽实体
+        # mask = masks.unsqueeze(2)
+        # du = (adj_list[0].sum(2) + adj_list[0].sum(1))
+        # for i in range(1, len(adj_list)):
+        #     du = du + adj_list[i].sum(2) + adj_list[i].sum(1)
+        # mask = du.eq(0).unsqueeze(2) #
 
         for i in range(len(self.layers)):
             if i < 2:
@@ -219,8 +231,8 @@ class AGGCN(nn.Module):
         aggregate_out = torch.cat(layer_list, dim=2)  # 50x64x1200
         dcgcn_output = self.aggregate_W(aggregate_out)  # 50x64x300
 
-        return dcgcn_output, mask
-
+        return dcgcn_output
+        # return dcgcn_output
 
 class GraphConvLayer(nn.Module):
     """ A GCN module operated on dependency graphs. """
@@ -379,8 +391,8 @@ class MultiGraphConvLayer(nn.Module):
 
 def pool(h, mask, type='max'):
     if type == 'max':
-        h = h.masked_fill(mask, -constant.INFINITY_NUMBER)
-        return torch.max(h, 1)[0]
+        h = h.masked_fill(mask, -constant.INFINITY_NUMBER) # 在 mask 为1 的地方， value 用-constant.INFINITY_NUMBER来代替
+        return torch.max(h, 1)[0] # todo
     elif type == 'avg':
         h = h.masked_fill(mask, 0)
         return h.sum(1) / (mask.size(1) - mask.float().sum(1))
@@ -398,7 +410,7 @@ def rnn_zero_state(batch_size, hidden_dim, num_layers, bidirectional=True):
 
 def attention(query, key, mask=None, dropout=None):
     d_k = query.size(-1)  # 100
-    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)  # 50x3x64x64
+    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)  # 50x3x64x100 * 50x3x100x64 -> 50x3x64x64
     if mask is not None:  # 50x1x1x64
         scores = scores.masked_fill(mask == 0, -1e9)  # mask 值为1 的地方由value填充
 
@@ -421,7 +433,7 @@ class MultiHeadAttention(nn.Module):
 
         self.d_k = d_model // h  # hidden_d // heads_num =100
         self.h = h
-        self.linears = clones(nn.Linear(d_model, d_model), 2)  # 两层 linear(d_hidden x d_hidden)
+        self.linears = clones(nn.Linear(d_model, d_model), 2)  # 两层 linear(d_hidden x d_hidden) 300x300
         self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, query, key, mask=None):
@@ -430,8 +442,8 @@ class MultiHeadAttention(nn.Module):
 
         nbatches = query.size(0)  # query:50x64x300,
 
-        query, key = [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
-                      for l, x in zip(self.linears, (query, key))]  # 50x3x64x100
+        query, key = [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2) # 50x64x300 * 300x300 -> 50x60x300 -> 50x64x3x100 -> 50x3x64x100
+                      for l, x in zip(self.linears, (query, key))]  # 50x3x64x100 zip：对应维度元素组合，因此 l是layer，x是要变换的值
         attn = attention(query, key, mask=mask, dropout=self.dropout)  # 50x3x64x64 masked softmaxed
 
         return attn
