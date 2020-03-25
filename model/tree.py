@@ -3,6 +3,7 @@ Basic operations on trees.
 """
 
 import numpy as np
+import torch
 
 
 class Tree(object):
@@ -68,11 +69,19 @@ def head_to_tree(head, len_):
     assert root is not None
     return root
 
+def tree_to_dist(sent_len, tree):
+    ret = -1 * np.ones(sent_len, dtype=np.int64)
+
+    for node in tree:
+        ret[node.idx] = node.dist
+
+    return ret
+
 def tree_to_adj(sent_len, tree, directed=True):
-    """
-    Convert a tree object to an (numpy) adjacency matrix.
-    """
+    """ Convert a tree object to an (numpy) adjacency matrix. """
     ret = np.zeros((sent_len, sent_len), dtype=np.float32)
+    # cuda_device = torch.cuda.current_device()
+    # ret = torch.zeros([sent_len, sent_len], dtype=torch.float32, device=cuda_device)
 
     queue = [tree]
     idx = []
@@ -89,25 +98,29 @@ def tree_to_adj(sent_len, tree, directed=True):
 
     return ret
 
-def tree_to_dist(sent_len, tree):
-    ret = -1 * np.ones(sent_len, dtype=np.int64)
 
-    for node in tree:
-        ret[node.idx] = node.dist
-
-    return ret
+# def head_to_adj(head, sent_len, max_len, directed=True):
+#     """ Convert a sequence of head indexes into a (numpy) adjacency matrix. """
+#     ret = np.zeros((max_len,max_len), dtype=np.float32)
+#
+#     for i in range(sent_len):
+#         if i != head[i] - 1 and head[i] > 0:
+#             ret[head[i] - 1, i] = 1
+#     if not directed:
+#         ret = ret + ret.T
+#
+#     return ret
 
 def head_to_adj(head, sent_len, max_len, directed=True):
-    """
-    Convert a sequence of head indexes into a (numpy) adjacency matrix.
-    """
-    ret = np.zeros((max_len,max_len), dtype=np.float32)
+    """ Convert a sequence of head indexes into a (numpy) adjacency matrix. """
+    cuda_device = torch.cuda.current_device()
+    ret = torch.zeros([max_len, max_len], dtype=torch.float32, device=cuda_device)
 
     for i in range(sent_len):
         if i != head[i] - 1 and head[i] > 0:
             ret[head[i] - 1, i] = 1
+            # if not directed: ret[i, head[i] - 1] = 1
     if not directed:
-        ret = ret + ret.T
+        ret = ret + torch.t(ret)
 
     return ret
-

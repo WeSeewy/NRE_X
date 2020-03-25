@@ -13,11 +13,12 @@ import torch
 import math
 import matplotlib
 import matplotlib.pyplot as plt
+import torch.utils.data.dataloader
 import torch.nn as nn
 import torch.optim as optim
 from torch.autograd import Variable
 
-from data.loader import DataLoader, DataPrefetcher
+from data.loader import DataLoader, DataPrefetcher, DataLoaderX
 from model.trainer import GCNTrainer
 from utils import torch_utils, scorer, constant, helper
 from utils.vocab import Vocab
@@ -63,6 +64,7 @@ parser.add_argument('--lr', type=float, default=0.7, help='Applies to sgd and ad
 parser.add_argument('--lr_decay', type=float, default=0.9, help='Learning rate decay rate.')
 parser.add_argument('--decay_epoch', type=int, default=5, help='Decay learning rate after this epoch.')
 parser.add_argument('--optim', choices=['sgd', 'adagrad', 'adam', 'adamax'], default='sgd', help='Optimizer: sgd, adagrad, adam or adamax.')
+parser.add_argument('--optim_change_epoch',type=int,default=5,help='when the optim change to sgd')
 parser.add_argument('--num_epoch', type=int, default=100, help='Number of total training epochs.')
 parser.add_argument('--batch_size', type=int, default=50, help='Training batch size.')
 parser.add_argument('--max_grad_norm', type=float, default=5.0, help='Gradient clipping.')
@@ -111,8 +113,8 @@ assert emb_matrix.shape[1] == opt['emb_dim']
 print("Loading data from {} with batch size {}...".format(opt['data_dir'], opt['batch_size']))
 # train_batch = DataLoader(opt['data_dir'] + '/train.json', opt['batch_size'], opt, vocab, evaluation=False)
 # dev_batch = DataLoader(opt['data_dir'] + '/dev.json', opt['batch_size'], opt, vocab, evaluation=True)
-train_batch = DataLoader(opt['data_dir'] + '/train_std_ber.json', opt['batch_size'], opt, vocab, evaluation=False)
-dev_batch = DataLoader(opt['data_dir'] + '/dev_std_ber.json', opt['batch_size'], opt, vocab, evaluation=True)
+train_batch = DataLoader(opt['data_dir'] + '/train_std_ber.json', opt['batch_size'], opt, vocab, evaluation=False, pin_memory=True)
+dev_batch = DataLoader(opt['data_dir'] + '/dev_std_ber.json', opt['batch_size'], opt, vocab, evaluation=True, pin_memory=True)
 model_id = opt['id'] if len(opt['id']) > 1 else '0' + opt['id']
 model_save_dir = opt['save_dir'] + '/' + model_id # './saved_models/00'
 opt['model_save_dir'] = model_save_dir
@@ -222,9 +224,12 @@ for epoch in range(1, opt['num_epoch']+1):
 
     # lr schedule
     if len(dev_score_history) > opt['decay_epoch'] and dev_score <= dev_score_history[-1] and \
-            opt['optim'] in ['sgd', 'adagrad', 'adadelta']:
+            opt['optim'] in ['sgd', 'adagrad', 'adadelta', 'adam']:
         current_lr *= opt['lr_decay']
         trainer.update_lr(current_lr)
+
+    # if epoch > opt['optim_change_epoch']:
+    #     opt['optim'] = 'sgd'
 
     dev_score_history += [dev_score]
     print("")

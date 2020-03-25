@@ -49,7 +49,7 @@ class Trainer(object):
 def unpack_batch(batch, cuda):
     # if cuda: # batch：tuple12*50Tensor
     #     inputs = [Variable(b.cuda()) for b in batch[:10]+batch[12:]]
-    #     # (words, masks, pos, ner, deprel, head, subj_positions, obj_positions, subj_type, obj_type) + ([x]rels, [x]orig_idx, head_berkeley, deprel_berkeley)
+    #     # (words, masks, pos, ner, deprel, head, subj_positions, obj_positions, subj_type, obj_type) + ([x]rels, [x]orig_idx, head_berkeley)
     #     labels = Variable(batch[10].cuda()) # rels
     # else:
     #     inputs = [Variable(b) for b in batch[:10]+batch[12:]]
@@ -60,7 +60,7 @@ def unpack_batch(batch, cuda):
     tokens = batch[0]  # 50 * 64
     head = batch[5] # 50 * 64
     head_berkeley = batch[12]
-    head_sequence = batch[14]
+    head_sequence = batch[13]
     subj_pos = batch[6]   # 50 * 64
     obj_pos = batch[7] # 50 * 64
     lens = batch[1].eq(0).long().sum(1).squeeze() # 每个句子的长度 Shape=50
@@ -99,6 +99,7 @@ class GCNTrainer(Trainer):
         self.optimizer.zero_grad()
         logits, pooling_output = self.model(inputs)
         loss = self.criterion(logits, labels)
+
         # l2 decay on all conv layers
         if self.opt.get('conv_l2', 0) > 0:
             loss += self.model.conv_l2() * self.opt['conv_l2']

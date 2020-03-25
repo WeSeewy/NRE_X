@@ -75,27 +75,36 @@ class GCNRelationModel(nn.Module):
             print("Finetune all embeddings.")
 
     def forward(self, inputs):
-        words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type, head_berkeley, deprel_berkeley, head_sequence= inputs  # unpack
-        l = (masks.data.cpu().numpy() == 0).astype(np.int64).sum(1)  # l 是各个句子的长度 [64,...,14 *50]
+        words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type, head_berkeley, head_sequence, l= inputs  # unpack
+        # l = (masks.data.cpu().numpy() == 0).astype(np.int64).sum(1)  # l 是各个句子的长度 [64,...,14 *50]
         maxlen = max(l)  # 64
 
-        # def inputs_to_tree_reps(head, l):
-        #     trees = [head_to_tree(head[i], l[i]) for i in range(len(l))]  # root of the tree objects
-        #     adj = [tree_to_adj(maxlen, tree, directed=False).reshape(1, maxlen, maxlen) for tree in trees]
-        #     adj = np.concatenate(adj, axis=0)  # 二维转一维
-        #     adj = torch.from_numpy(adj)
-        #     return Variable(adj.cuda()) if self.opt['cuda'] else Variable(adj)
-
-        def inputs_to_adj_reps(head, l):
-            adj = [head_to_adj(head[i], l[i], maxlen, directed=False).reshape(1, maxlen, maxlen) for i in range(len(l))]
-            adj = np.concatenate(adj, axis=0)  # shape=(maxlen * adj_num, adj)
+        def inputs_to_tree_reps(head, l):
+            trees = [head_to_tree(head[i], l[i]) for i in range(len(l))]  # root of the tree objects
+            adj = [tree_to_adj(maxlen, tree, directed=False).reshape(1, maxlen, maxlen) for tree in trees]
+            adj = np.concatenate(adj, axis=0)  # 二维转一维
             adj = torch.from_numpy(adj)
             return Variable(adj.cuda()) if self.opt['cuda'] else Variable(adj)
 
-        # adj = inputs_to_tree_reps(head.data, l)  # head -> 邻接矩阵 -> 转成一维cuda变量
-        adj = inputs_to_adj_reps(head.data, l)
-        adj_berkeley = inputs_to_adj_reps(head_berkeley.data, l)
-        adj_sequence = inputs_to_adj_reps(head_sequence.data, l)
+        # def inputs_to_adj_reps(head, l):
+        #     adj = [head_to_adj(head[i], l[i], maxlen, directed=False)for i in range(len(l))]
+        #     adj = [adj[i].reshape(1, maxlen, maxlen) for i in range(len(l))] # 句子数x句子maxlenx句子maxlen
+        #     adj = np.concatenate(adj, axis=0)  # shape=(maxlen * adj_num, adj)
+        #     adj = torch.from_numpy(adj)
+        #     return Variable(adj.cuda()) if self.opt['cuda'] else Variable(adj)
+
+        # def inputs_to_adj_reps(head, l):
+        #     adj = [head_to_adj(head[i], l[i], maxlen, directed=False) for i in range(len(l))]
+        #     adj = [adj[i].reshape(1, maxlen, maxlen) for i in range(len(l))]
+        #     adj = torch.cat(adj, dim=0)
+        #     return Variable(adj)
+
+        adj = inputs_to_tree_reps(head.data, l)  # head -> 邻接矩阵 -> 转成一维cuda变量
+        adj_berkeley = inputs_to_tree_reps(head_berkeley.data, l)
+        adj_sequence = inputs_to_tree_reps(head_sequence.data, l)
+        # adj = inputs_to_adj_reps(head.data, l)
+        # adj_berkeley = inputs_to_adj_reps(head_berkeley.data, l)
+        # adj_sequence = inputs_to_adj_reps(head_sequence.data, l)
 
         if sum(self.use_parsers) == 0: adj_list = [adj]
         else:
@@ -182,7 +191,7 @@ class AGGCN(nn.Module):
 
     def forward(self, adj_list, inputs):
         # words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type = inputs # unpack
-        words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type, head_berkeley, deprel_berkeley, head_sequence = inputs  # unpack
+        words, masks, pos, ner, deprel, head, subj_pos, obj_pos, subj_type, obj_type, head_berkeley, head_sequence, l = inputs  # unpack
         # adj:50x64x64 marsks:50x64
         src_mask = (words != constant.PAD_ID).unsqueeze(-2)  # shape=(50,1,64)
         word_embs = self.emb(words)  # words 50x64 -> word_embs 50x64x300
