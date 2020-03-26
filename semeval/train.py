@@ -71,7 +71,7 @@ parser.add_argument('--batch_size', type=int, default=50, help='Training batch s
 parser.add_argument('--max_grad_norm', type=float, default=5.0, help='Gradient clipping.')
 parser.add_argument('--log_step', type=int, default=80, help='Print log every k steps.')
 parser.add_argument('--log', type=str, default='logs.txt', help='Write training log to file.')
-parser.add_argument('--save_epoch', type=int, default=100, help='Save model checkpoints every k epochs.')
+parser.add_argument('--save_epoch', type=int, default=50, help='Save model checkpoints every k epochs.')
 parser.add_argument('--save_dir', type=str, default='./saved_models', help='Root dir for saving models.')
 parser.add_argument('--id', type=str, default='00', help='Model ID under which to save models.')
 parser.add_argument('--info', type=str, default='', help='Optional info for the experiment.')
@@ -111,6 +111,7 @@ assert emb_matrix.shape[1] == opt['emb_dim']
 # load data
 print("Loading data from {} with batch size {}...".format(opt['data_dir'], opt['batch_size']))
 train_batch = DataLoader(opt['data_dir'] + '/train_std_ber.json', opt['batch_size'], opt, vocab, evaluation=False)
+dev_batch = DataLoader(opt['data_dir'] + '/test_std_ber.json', opt['batch_size'], opt, vocab, evaluation=True, pin_memory=True)
 
 model_id = opt['id'] if len(opt['id']) > 1 else '0' + opt['id']
 model_save_dir = opt['save_dir'] + '/' + model_id
@@ -140,12 +141,16 @@ else:
 id2label = dict([(v,k) for k,v in label2id.items()])
 current_lr = opt['lr']
 train_loss_history = []
+dev_score_history = []
 
 global_step = 0
 global_start_time = time.time()
 format_str = '{}: step {}/{} (epoch {}/{}), loss = {:.6f} ({:.3f} sec/batch), lr: {:.6f}'
 max_steps = len(train_batch) * opt['num_epoch']
-x1 = []
+
+x1 = []; y1 = [] # 每个 step 的 loss
+x2 = []; y2loss = []; y2p = []; y2r = []; y2f = [] # 每个 epoch 的p r f
+
 # start training
 for epoch in range(1, opt['num_epoch']):
     train_loss = 0
@@ -169,28 +174,70 @@ for epoch in range(1, opt['num_epoch']):
             duration = time.time() - start_time
             print(format_str.format(datetime.now(), global_step, max_steps, epoch,\
                     opt['num_epoch'], loss, duration, current_lr))
+        x1.append(global_step); y1.append(loss)
+        batch = prefetcher.next()
 
+    print("Evaluating on dev set...")
+    predictions = []
+    dev_loss = 0
+    prefetcher = DataPrefetcher(dev_batch)
+    batch = prefetcher.next()
+    while batch is not None:
+        preds, _, loss = trainer.predict(batch)
+        predictions += preds
+        dev_loss += loss
+        batch = prefetcher.next()
+
+    predictions = [id2label[p] for p in predictions]
     train_loss = train_loss / train_batch.num_examples * opt['batch_size'] # avg loss per batch
-    print("epoch {}: train_loss = {:.6f}".format(epoch,\
-        train_loss))
-    file_logger.log("{}\t{:.6f}\t".format(epoch, train_loss))
+    dev_loss = dev_loss / dev_batch.num_examples * opt['batch_size']
+
+    dev_p, dev_r, dev_f1 = scorer.score(dev_batch.gold(), predictions)
+    print("epoch {}: train_loss = {:.6f}, dev_loss = {:.6f}, dev_f1 = {:.4f}".format(epoch,\
+        train_loss, dev_loss, dev_f1))
+    dev_score = dev_f1
+    y2p.append(dev_p)
+    y2r.append(dev_r)
+    x2.append(global_step)
+    y2loss.append(dev_loss)
+    file_logger.log("{}\t{:.6f}\t{:.6f}\t{:.4f}\t{:.4f}".format(epoch, train_loss, dev_loss, dev_score, max([dev_score] + dev_score_history)))
+
+    # train_loss = train_loss / train_batch.num_examples * opt['batch_size'] # avg loss per batch
+    # print("epoch {}: train_loss = {:.6f}".format(epoch,\
+    #     train_loss))
+    # file_logger.log("{}\t{:.6f}\t".format(epoch, train_loss))
 
     # save
     model_file = model_save_dir + '/checkpoint_epoch_{}.pt'.format(epoch+1)
     trainer.save(model_file, epoch)
+    if epoch == 1 or dev_score > max(dev_score_history):
+        copyfile(model_file, model_save_dir + '/best_model.pt')
+        print("new best model saved.")
+        file_logger.log("new best model saved at epoch {}: {:.2f}\t{:.2f}\t{:.2f}"\
+            .format(epoch, dev_p*100, dev_r*100, dev_score*100))
+    if epoch % opt['save_epoch'] != 0:
+        os.remove(model_file)
 
     # lr schedule
     if epoch > opt['decay_epoch'] and (train_loss - train_loss_history[-1]) > 0.001 and \
             opt['optim'] in ['sgd', 'adagrad', 'adadelta']:
         current_lr *= opt['lr_decay']
         trainer.update_lr(current_lr)
-    x1.append(global_step)
+
     train_loss_history += [train_loss]
+    dev_score_history += [dev_score]
     print("")
 
 print("Training ended with {} epochs.".format(epoch))
 
+y2f = dev_score_history
 matplotlib.use('AGG')
 plt.figure()
-plt.plot(x1, train_loss_history, color='b',linestyle='-',)# :
+plt.subplot(211)
+plt.plot(x1,train_loss_history,color='b',linestyle='-',)# :
+plt.plot(x2,y2loss,color='g',linestyle='-') # -.
+plt.subplot(212)
+plt.plot(x2,y2p,color='y',linestyle='--')
+plt.plot(x2,y2r,color='m',linestyle='--')
+plt.plot(x2,y2f, color='r',linestyle='-')
 plt.savefig(model_save_dir + '/scores.png')
