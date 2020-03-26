@@ -47,19 +47,22 @@ class Trainer(object):
 
 
 def unpack_batch(batch, cuda):
-
-    if cuda:
-        inputs = [Variable(b.cuda()) for b in batch[:7]]
-        labels = Variable(batch[7].cuda())
-    else:
-        inputs = [Variable(b) for b in batch[:7]]
-        labels = Variable(batch[7])
+    # if cuda:
+    #     inputs = [Variable(b.cuda()) for b in batch[:7]]
+    #     labels = Variable(batch[7].cuda())
+    # else:
+    #     inputs = [Variable(b) for b in batch[:7]]
+    #     labels = Variable(batch[7])
+    inputs = [Variable(b) for b in batch[:7]+batch[9:]]
+    labels = Variable(batch[7])
     tokens = batch[0]
     head = batch[4]
+    head_berkeley = batch[9]
+    head_sequence = batch[10]
     subj_pos = batch[5]
     obj_pos = batch[6]
     lens = batch[1].eq(0).long().sum(1).squeeze()
-    return inputs, labels, tokens, head, subj_pos, obj_pos, lens      
+    return inputs, labels, tokens, head, subj_pos, obj_pos, lens,  head_berkeley, head_sequence
 
 class GCNTrainer(Trainer):
     def __init__(self, opt, emb_matrix=None):
@@ -74,7 +77,8 @@ class GCNTrainer(Trainer):
         self.optimizer = torch_utils.get_optimizer(opt['optim'], self.parameters, opt['lr'])
 
     def update(self, batch):
-        inputs, labels, tokens, head, subj_pos, obj_pos, lens = unpack_batch(batch, self.opt['cuda'])
+        inputs, labels, tokens, head, subj_pos, obj_pos, lens, \
+        head_berkeley, head_sequence = unpack_batch(batch, self.opt['cuda'])
 
         # step forward
         self.model.train()
@@ -95,7 +99,8 @@ class GCNTrainer(Trainer):
         return loss_val
 
     def predict(self, batch, unsort=True):
-        inputs, labels, tokens, head, subj_pos, obj_pos, lens = unpack_batch(batch, self.opt['cuda'])
+        inputs, labels, tokens, head, subj_pos, obj_pos, lens,\
+        head_berkeley, head_sequence = unpack_batch(batch, self.opt['cuda'])
         orig_idx = batch[8]
         # forward
         self.model.eval()

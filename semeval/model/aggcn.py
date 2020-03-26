@@ -74,7 +74,7 @@ class GCNRelationModel(nn.Module):
             print("Finetune all embeddings.")
 
     def forward(self, inputs):
-        words, masks, pos, deprel, head, subj_pos, obj_pos = inputs # unpack
+        words, masks, pos, deprel, head, subj_pos, obj_pos, head_berkeley, head_sequence, l = inputs # unpack
         l = (masks.data.cpu().numpy() == 0).astype(np.int64).sum(1)
         maxlen = max(l)
 
@@ -149,7 +149,7 @@ class AGGCN(nn.Module):
         return rnn_outputs
 
     def forward(self, adj, inputs):
-        words, masks, pos, deprel, head, subj_pos, obj_pos = inputs # unpack
+        words, masks, pos, deprel, head, subj_pos, obj_pos, head_berkeley, head_sequence, l = inputs # unpack
         src_mask = (words != constant.PAD_ID).unsqueeze(-2)
 
         word_embs = self.emb(words)

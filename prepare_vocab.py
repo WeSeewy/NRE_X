@@ -74,7 +74,7 @@ def main():
     np.save(emb_file, embedding)
     print("all done.")
 
-# 读取 json 数据集，实体用 <PAD> 代替
+# 读取 json 数据集，实体用 <PAD> 代替并不计入tokens表
 def load_tokens(filename):
     with open(filename) as infile:
         data = json.load(infile)
